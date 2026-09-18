@@ -1,0 +1,37 @@
+{
+  "files_processed": 2,
+  "total_events": 148,
+  "config": {
+    "original_fs": 50000,
+    "target_fs": 1000,
+    "prominence_std_mult": 1.5,
+    "min_distance_sec": 0.1,
+    "min_width_sec": 0.01,
+    "baseline_window_sec": 5.0,
+    "data_dir": "./Test signals from previous years/Suction data/Original",
+    "test_files": [
+      "5. suction_HIGH_CONC_1ml_and_no_resuction.csv",
+      "6. suction_MIDDLE_CONC_3ml_(and_no_resuction).csv"
+    ],
+    "decimation_factor": 50,
+    "min_distance_samples": 100,
+    "min_width_samples": 10,
+    "baseline_window_samples": 5000
+  },
+  "per_file": [
+    {
+      "file": "5. suction_HIGH_CONC_1ml_and_no_resuction.csv",
+      "duration_sec": 70.28,
+      "events_detected": 65,
+      "events_per_min": 55.49,
+      "config": "prom=1.5x"
+    },
+    {
+      "file": "6. suction_MIDDLE_CONC_3ml_(and_no_resuction).csv",
+      "duration_sec": 128.56,
+      "events_detected": 83,
+      "events_per_min": 38.74,
+      "config": "prom=1.5x"
+    }
+  ]
+}
