@@ -1,0 +1,10 @@
+convert data to different types to optimize speed, as in not CSV file, into different variable types, try binary data/floats/etc
+other time-saving strategies
+how to show the data on the screen
+dmitry is very focused on speed (time and memory optimizations)
+use the copilot internal to uef, not lumo
+splitting tasks goes later moreso, right now we should all learn about the data and how to solve the problem
+presentation slides for meetings with the teachers
+use time and memory diagnostics
+using only one channel means less memory, is using 2 really worth it?
+batch processing, not processing the whole file
