@@ -1,0 +1,9 @@
+binary file format from the existing csv type, does using unsigned numbers help
+preprocessing/downsampling, and then the timer starts! dmitry likened this to video editing and then rendering process
+start the processing task before the data read task is completed
+parallelize, program should be aware of available cpu cores
+print partial outputs iteratively
+the program should be aware to not short the computer out of memory
+combine individual presentations into one presentation so there's not topic overlap, also keep in mind the maximum 30 minutes
+
+also: one can load a file part into memory, process it, then garbage collect it out of memory before other parts are complete
