@@ -4,7 +4,7 @@ ACTIVITY IS CALCULATED ON RAW PREPROCESSED DATA BEFORE ANY BASELINE REMOVAL.
 """
 import numpy as np
 import pandas as pd
-import json, time, gc
+import json, gc
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
@@ -155,14 +155,11 @@ def run_batch_region_extraction(num_workers=None):
     results = []
     total_original_mb = 0
     total_stored_mb = 0
-    total_time = 0
 
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
         futures = {executor.submit(detect_regions_and_extract, f, REGION_CONFIG): f for f in bin_files}
         for future in as_completed(futures):
             result = future.result()
-            elapsed = result.get('processing_ms', 0) / 1000 if 'processing_ms' in result else 0
-            total_time += elapsed
 
             if result.get('status') != 'skipped':
                 total_original_mb += result.get('original_size_mb', 0)
@@ -179,8 +176,7 @@ def run_batch_region_extraction(num_workers=None):
     else:
         pct_stored = 0.0
     print(f"\n{total_original_mb:.2f}MB → {total_stored_mb:.2f}MB "
-        f"({pct_stored:.1f}% stored) | "
-        f"All files processed in {total_time:.1f}s")
+        f"({pct_stored:.1f}% stored)")
 
     df = pd.DataFrame(results)
     df.to_csv(REGION_CONFIG['output_dir'] / 'region_extraction_results.csv', index=False)
