@@ -15,8 +15,8 @@ REGION_CONFIG = {
 
     # Activity detection thresholds (calculated on RAW preprocessed data)
     'activity_window_samples': 50,      # activity_window_samples*1000/Hz = ms of sliding window, where Hz is the downsampled Hz
-    'activity_multiplier': 1.25,        # >activity_multiplier*baseline = active 
-    'min_region_duration_sec': 0.1,     # Ignore regions shorter than this (noise)
+    'activity_multiplier': 0.2,         # >activity_multiplier*baseline = active 
+    'min_region_duration_sec': 0.01,    # Ignore regions shorter than this (noise)
     'padding_sec': 0,                   # Add buffer before/after each region, in seconds
 }
 REGION_CONFIG['target_fs'] = 500

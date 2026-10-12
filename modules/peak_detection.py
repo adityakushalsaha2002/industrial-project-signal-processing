@@ -12,11 +12,11 @@ PEAK_CONFIG = {
     'peaks_dir': Path('./Test signals from previous years/Suction data/Peaks'),
 
     # Peak detection parameters
-    'min_peak_height': 50,           # Minimum height above baseline (in centered units)
+    'min_peak_height': 25,          # Minimum height above baseline (in centered units)
     'min_peak_percentage': 5,       # Scales with file amplitude
     'min_distance_samples': 50,     # min_distance_samples/Hz = seconds between peaks, where Hz is the downsampled Hz
-    'prominence': 10,                # Peak prominence threshold
-    'prominence_percentage': 2,      # Scales with file amplitude
+    'prominence': 0,                # Peak prominence threshold
+    'prominence_percentage': 0,     # Scales with file amplitude
 }
 PEAK_CONFIG['peaks_dir'].mkdir(parents=True, exist_ok=True)
 

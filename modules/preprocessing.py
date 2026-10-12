@@ -16,7 +16,7 @@ CFG = {
     'adc_column': 'adc2',
     'adc_col_index': None,
     'chunk_rows': 100_000_000,
-    'window_size_sec': 300,
+    'window_size_sec': 60,
     'uint16_offset': 32_768,
     'overwrite': False,
 }
@@ -106,7 +106,6 @@ def preprocess_file(csv_path, cfg):
         'samples': int(len(u16)),
         'duration_sec': round(len(u16) / cfg['target_fs'], 2),
         'dtype': 'uint16',
-        'value_offset': cfg['uint16_offset'],
         'value_offset': cfg['uint16_offset'],
         'baseline_window_sec': cfg['window_size_sec'],
         'preprocess_time_sec': round(time.time() - t0, 1),
