@@ -8,18 +8,19 @@ import json, time, gc
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
+from modules.preprocessing import CFG
 
 REGION_CONFIG = {
     'data_dir': Path('./Test signals from previous years/Suction data/Preprocessed'),
     'output_dir': Path('./Test signals from previous years/Suction data/Region'),
 
     # Activity detection thresholds (calculated on RAW preprocessed data)
-    'activity_window_samples': 50,      # activity_window_samples*1000/Hz = ms of sliding window, where Hz is the downsampled Hz
+    'activity_window_samples': 10,      # activity_window_samples*1000/Hz = ms of sliding window, where Hz is the downsampled Hz
     'activity_multiplier': 0.2,         # >activity_multiplier*baseline = active 
     'min_region_duration_sec': 0.01,    # Ignore regions shorter than this (noise)
     'padding_sec': 0,                   # Add buffer before/after each region, in seconds
 }
-REGION_CONFIG['target_fs'] = 500
+REGION_CONFIG['target_fs'] = CFG['target_fs']
 REGION_CONFIG['padding_samples'] = int(REGION_CONFIG['padding_sec'] * REGION_CONFIG['target_fs'])
 REGION_CONFIG['output_dir'].mkdir(parents=True, exist_ok=True)
 

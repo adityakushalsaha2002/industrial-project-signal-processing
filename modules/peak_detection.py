@@ -14,7 +14,7 @@ PEAK_CONFIG = {
     # Peak detection parameters
     'min_peak_height': 25,          # Minimum height above baseline (in centered units)
     'min_peak_percentage': 5,       # Scales with file amplitude
-    'min_distance_samples': 50,     # min_distance_samples/Hz = seconds between peaks, where Hz is the downsampled Hz
+    'min_distance_samples': 10,     # min_distance_samples/Hz = seconds between peaks, where Hz is the downsampled Hz
     'prominence': 0,                # Peak prominence threshold
     'prominence_percentage': 0,     # Scales with file amplitude
 }

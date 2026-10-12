@@ -12,7 +12,7 @@ CFG = {
     'input_dir': Path('./Test signals from previous years/Suction data/Original'),
     'output_dir': Path('./Test signals from previous years/Suction data/Preprocessed'),
     'original_fs': 50_000,      # Hz
-    'target_fs': 500,           # Hz
+    'target_fs': 100,           # Hz
     'adc_column': 'adc2',
     'adc_col_index': None,
     'chunk_rows': 100_000_000,
