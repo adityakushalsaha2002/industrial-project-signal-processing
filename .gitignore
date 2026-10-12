@@ -1,3 +1,4 @@
 venv
 Test signals from previous years
 preprocessed
+__pycache__
