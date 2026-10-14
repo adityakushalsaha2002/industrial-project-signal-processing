@@ -2,6 +2,7 @@
 Visualization module: plot full signals with detected peaks.
 FIXED: Correctly locates peak metadata files in Region/ directory.
 PARALLELIZED: Uses ProcessPoolExecutor for batch processing.
+UPDATED: Displays calculated tumor volume in legend.
 """
 import time
 import pandas as pd
@@ -16,14 +17,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from modules.preprocessing import CFG
 from modules.region_detection import REGION_CONFIG
 from modules.peak_detection import PEAK_CONFIG
-
+from modules.tumor_volume_estimation import VOLUME_CONFIG
 
 VISUALIZATION_CONFIG = {
     'results_dir': Path('./Test signals from previous years/Suction data/Results')
 }
 PREPROCESSING_DIR = CFG['output_dir']
 REGION_DIR = REGION_CONFIG['output_dir']
-
+# Convert string path to Path for file operations
+VOLUME_DIR = Path(VOLUME_CONFIG['output_dir'])
 
 def plot_full_signal_with_peaks(bin_path_str):
     """Plot complete signal with peaks + active/inactive region shading.
@@ -73,7 +75,7 @@ def plot_full_signal_with_peaks(bin_path_str):
     # =============================
     # STEP 3: Load and mark PEAKS
     # =============================
-    peak_meta_name = f"{bin_path.stem}_regions_peaks.meta.json"  # Check your actual save location
+    peak_meta_name = f"{bin_path.stem}_regions_peaks.meta.json"
     peak_meta_path = PEAK_CONFIG['peaks_dir'] / peak_meta_name
     
     num_peaks = 0
@@ -98,11 +100,33 @@ def plot_full_signal_with_peaks(bin_path_str):
                       edgecolors='darkred', linewidths=0.3,
                       label=f'Detected peaks (n={num_peaks})')
 
+    # =============================
+    # STEP 4: Load VOLUME data (NEW)
+    # =============================
+    volume_meta_name = f"{bin_path.stem}_regions_volume.meta.json"
+    volume_meta_path = VOLUME_DIR / volume_meta_name  # Use VOLUME_DIR (Path object)
+    
+    volume_display = ""
+    if volume_meta_path.exists():
+        volume_meta = json.loads(volume_meta_path.read_text())
+        total_volume = volume_meta.get('total_volume_units', 0)
+        num_regions_with_peaks = volume_meta.get('num_regions_with_peaks', 0)
+        volume_display = f"Tumor volume: {total_volume:.1f} units | Regions with peaks: {num_regions_with_peaks}"
+    
+    # =============================
     # Labels and title
+    # =============================
     ax.set_xlabel('Time (seconds)', fontsize=10)
     ax.set_ylabel('Amplitude (centered)', fontsize=10)
-    ax.set_title(f"{bin_path.name}\nDuration: {meta['duration_sec']:.1f}s | {meta['samples']:,} samples | Peaks: {num_peaks}",
-                fontsize=11, fontweight='bold')
+    
+    title_parts = [f"{bin_path.name}",
+                  f"Duration: {meta['duration_sec']:.1f}s | {meta['samples']:,} samples"]
+    if num_peaks > 0:
+        title_parts.append(f"| Peaks: {num_peaks}")
+    if volume_display:
+        title_parts.append(f"| {volume_display}")
+    
+    ax.set_title("\n".join(title_parts), fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
     ax.legend(loc='upper right', fontsize=9)
 
@@ -116,9 +140,9 @@ def plot_full_signal_with_peaks(bin_path_str):
         'file': bin_path.name,
         'output_file': str(output_path),
         'num_regions': regions_found,
-        'num_peaks': num_peaks
+        'num_peaks': num_peaks,
+        'tumor_volume': volume_meta.get('total_volume_units', 0) if volume_meta_path.exists() else None
     }
-
 
 def run_full_batch_visualization(num_workers=None):
     """Batch process all files for visualization in parallel."""
@@ -136,7 +160,8 @@ def run_full_batch_visualization(num_workers=None):
         for future in as_completed(futures):
             result = future.result()
             status = "✅" if result.get('status') == 'completed' else "❌"
-            print(f"{status}: {result['file']} | Regions: {result.get('num_regions', 0)} | Peaks: {result.get('num_peaks', 0)}")
+            vol_info = f"Volume: {result.get('tumor_volume', 0):.1f}" if result.get('tumor_volume') is not None else "No volume"
+            print(f"{status}: {result['file']} | Regions: {result.get('num_regions', 0)} | Peaks: {result.get('num_peaks', 0)} | {vol_info}")
             results.append(result)
 
     elapsed_time = time.time() - total_time_start

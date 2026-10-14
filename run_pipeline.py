@@ -5,6 +5,7 @@ Main pipeline orchestration script.
 from modules.preprocessing import run_batch_preprocessing
 from modules.region_detection import run_batch_region_extraction
 from modules.peak_detection import run_batch_peak_detection
+from modules.tumor_volume_estimation import run_batch_volume_estimation
 from modules.visualization import run_full_batch_visualization
 
 
@@ -28,8 +29,13 @@ def main():
     print("-" * 40)
     peak_results = run_batch_peak_detection()
 
-    # Step 4: Visualization (sequential)
-    print("\n[STEP 4] VISUALIZATION")
+    # Step 4: Tumor Volume Estimation (parallelized)
+    print("\n[STEP 4] TUMOR VOLUME ESTIMATION")
+    print("-" * 40)
+    volume_results = run_batch_volume_estimation()
+
+    # Step 5: Visualization (parallelized)
+    print("\n[STEP 5] VISUALIZATION")
     print("-" * 40)
     plot_paths = run_full_batch_visualization()
 
