@@ -10,10 +10,10 @@ from modules.region_detection import REGION_CONFIG
 from modules.peak_detection import PEAK_CONFIG
 
 VOLUME_CONFIG = {
-    'output_dir': './Test signals from previous years/Suction data/Volume',  # Changed from Path to string
+    'output_dir': './Test signals from previous years/Suction data/Volume',
     
     # Negative value handling: 'ignore', 'absolute', or 'signed'
-    'negative_handling': 'ignore',  # Set to 'absolute' to count absolute values, 'signed' for raw integration
+    'negative_handling': 'ignore',   # Set to 'absolute' to count absolute values, 'signed' for raw integration
     
     # Integration parameters
     'baseline_correction': True,     # Subtract region baseline before integration

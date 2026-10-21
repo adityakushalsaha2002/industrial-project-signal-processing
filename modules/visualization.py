@@ -101,7 +101,7 @@ def plot_full_signal_with_peaks(bin_path_str):
                       label=f'Detected peaks (n={num_peaks})')
 
     # =============================
-    # STEP 4: Load VOLUME data (NEW)
+    # STEP 4: Load VOLUME data
     # =============================
     volume_meta_name = f"{bin_path.stem}_regions_volume.meta.json"
     volume_meta_path = VOLUME_DIR / volume_meta_name  # Use VOLUME_DIR (Path object)

@@ -74,7 +74,7 @@ def pool_downsample(chunks, block):
 
 
 def preprocess_file(csv_path, cfg):
-    """Single file preprocessing: decimate → per-file baseline → uint16 .bin + sidecar."""
+    """Single file preprocessing: decimate → rolling baseline → uint16 .bin + sidecar."""
     bin_path = cfg['output_dir'] / (csv_path.stem + '.bin')
     meta_path = cfg['output_dir'] / (csv_path.stem + '.meta.json')
 

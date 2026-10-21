@@ -44,7 +44,8 @@ def detect_regions_and_extract(bin_path, cfg):
     # Rolling std captures local variance in the raw signal
     activity_std = pd.Series(raw_data).rolling(cfg['activity_window_samples'], center=True, min_periods=1).std().to_numpy()
 
-    # PER-FILE BASELINE: Overall std of the ENTIRE file (no drift)
+    # PER-FILE BASELINE: Overall std of the ENTIRE file
+    # wip: should be changed to rolling?
     baseline_std = np.std(raw_data.astype(np.float64))
     activity_threshold = cfg['activity_multiplier'] * baseline_std
 
@@ -130,6 +131,7 @@ def detect_regions_and_extract(bin_path, cfg):
     meta_path_out = cfg['output_dir'] / (bin_path.stem + '_regions.meta.json')
 
     # SKIP if already exists
+    # wip: these types of checks should happen sooner
     if output_path.exists():
         print(f"⏭️ SKIPPED: {bin_path.name} (regions already extracted)")
         return {'status': 'skipped', 'file': bin_path.name, **output_meta}
