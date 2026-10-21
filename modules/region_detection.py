@@ -24,7 +24,7 @@ REGION_CONFIG['target_fs'] = CFG['target_fs']
 REGION_CONFIG['padding_samples'] = int(REGION_CONFIG['padding_sec'] * REGION_CONFIG['target_fs'])
 REGION_CONFIG['output_dir'].mkdir(parents=True, exist_ok=True)
 
-
+# wip: why are there more regions with peaks than peaks sometimes?
 def detect_regions_and_extract(bin_path, cfg):
     """
     Detect contiguous active regions → store as blocks → save
