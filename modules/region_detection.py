@@ -25,6 +25,7 @@ REGION_CONFIG['padding_samples'] = int(REGION_CONFIG['padding_sec'] * REGION_CON
 REGION_CONFIG['output_dir'].mkdir(parents=True, exist_ok=True)
 
 # wip: why are there more regions with peaks than peaks sometimes?
+# wip: the terminal output/metadata files should show preprocessed file size -> region-detected file size, not raw file size -> region-detected file size
 def detect_regions_and_extract(bin_path, cfg):
     """
     Detect contiguous active regions → store as blocks → save
