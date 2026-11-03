@@ -13,7 +13,7 @@ VOLUME_CONFIG = {
     'output_dir': './Test signals from previous years/Suction data/Volume',
     
     # Negative value handling: 'ignore', 'absolute', or 'signed'
-    'negative_handling': 'ignore',   # Set to 'absolute' to count absolute values, 'signed' for raw integration
+    'negative_handling': 'noise_corrected',   # Set to 'absolute' to count absolute values, 'signed' for raw integration
     
     # Integration parameters
     'baseline_correction': True,     # Subtract region baseline before integration
@@ -73,7 +73,6 @@ def calculate_region_volume(region_data_result):
     peak_count = 0
     
     for reg_idx, region in enumerate(regions):
-        # Check if this region has peaks
         region_has_peaks = False
         for peak_record in detected_peaks:
             if peak_record['region_index'] == reg_idx:
@@ -81,32 +80,41 @@ def calculate_region_volume(region_data_result):
                 peak_count += peak_record['num_peaks']
                 break
         
-        # Skip regions without peaks
         if not region_has_peaks:
             continue
         
         data = region['data'].copy()
         
-        # Apply baseline correction if enabled
         if config.get('baseline_correction', False):
             baseline = np.median(data)
             data = data - baseline
         
-        # Handle negative values based on configuration
-        if config['negative_handling'] == 'ignore':
-            # Set negative values to 0 (conservative estimate)
+        # FIX 3: Noise-expectation-corrected rectified integral
+        # Instead of flooring negatives at zero, subtract expected noise contribution
+        if config['negative_handling'] == 'noise_corrected':
+            # Estimate noise floor from pre-peak baseline (first 20% of region)
+            n_baseline_samples = max(int(len(data) * 0.2), 10)
+            noise_std = np.std(data[:n_baseline_samples])
+            noise_expectation = noise_std * np.sqrt(2/np.pi)  # Expected |N(0,σ)|
+            
+            # Rectify with noise subtraction
+            rectified = np.maximum(data, 0) - noise_expectation
+            rectified = np.maximum(rectified, 0)  # Ensure no negative integral
+            region_integral = np.sum(rectified) / fs
+        elif config['negative_handling'] == 'ignore':
             data = np.maximum(data, 0)
+            min_val = config.get('min_signal_value', 0)
+            data = np.maximum(data, min_val)
+            region_integral = np.sum(data) / fs
         elif config['negative_handling'] == 'absolute':
-            # Take absolute value of all samples
             data = np.abs(data)
-        # 'signed' leaves data unchanged
-        
-        # Apply minimum signal floor
-        min_val = config.get('min_signal_value', 0)
-        data = np.maximum(data, min_val)
-        
-        # Integrate (sum * sampling interval for physical units)
-        region_integral = np.sum(data) / fs  # Convert samples to seconds
+            region_integral = np.sum(data) / fs
+        else:  # signed
+            region_integral = np.sum(data) / fs
+            positive_sum = np.sum(np.maximum(data, 0)) / fs
+            negative_sum = np.sum(np.minimum(data, 0)) / fs
+            total_positive_volume += positive_sum
+            total_negative_volume += negative_sum
         
         region_volumes.append({
             'region_index': reg_idx,
@@ -116,15 +124,11 @@ def calculate_region_volume(region_data_result):
             'integrated_volume': round(region_integral, 4),
             'max_amplitude': int(np.max(data)),
             'mean_amplitude': round(np.mean(data), 2),
+            'noise_std': round(noise_std, 2) if config['negative_handling'] == 'noise_corrected' else None,
         })
         
         total_volume += region_integral
-        
-        # Track positive/negative separately for reporting
-        positive_sum = np.sum(np.maximum(data, 0)) / fs
-        negative_sum = np.sum(np.minimum(data, 0)) / fs
-        total_positive_volume += positive_sum
-        total_negative_volume += negative_sum
+        # ... track positive/negative separately if needed
     
     return {
         'total_volume_units': round(total_volume, 4),

@@ -1,5 +1,5 @@
 one tumor can have varying concentrations, so it must generalize to data where we don't know the concentration of
 maybe different concentrations have different "footprints" or patterns in the data
-central: how to estimate volume with varying concentrations
+central: how to estimate volume with varying concentrations/tumor grades (1-4)
 compare with non-downsampled, non-preprocessed data peaks to verify
 complete files 0-100 first, maybe show partial solution progress for big-enough files

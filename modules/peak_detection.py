@@ -58,9 +58,13 @@ def detect_peaks_in_regions(region_data_result):
         data = region['data']
         time_axis = np.arange(len(data)) / fs
 
-        signal_amplitude = np.max(np.abs(data)) - np.min(np.abs(data))
-        adaptive_height = max(PEAK_CONFIG['min_peak_height'], signal_amplitude * PEAK_CONFIG['min_peak_percentage'] / 100)
-        adaptive_prominence = max(PEAK_CONFIG['prominence'], signal_amplitude * PEAK_CONFIG['prominence_percentage'] / 100)
+        # FIX 1: Robust percentile range instead of max-min
+        p50 = np.percentile(data, 50)
+        p99 = np.percentile(data, 99)
+        robust_amplitude = p99 - p50  # Much less sensitive to outliers
+        
+        adaptive_height = max(PEAK_CONFIG['min_peak_height'], robust_amplitude * PEAK_CONFIG['min_peak_percentage'] / 100)
+        adaptive_prominence = max(PEAK_CONFIG['prominence'], robust_amplitude * PEAK_CONFIG['prominence_percentage'] / 100)
 
         peaks, properties = find_peaks(
             data,
