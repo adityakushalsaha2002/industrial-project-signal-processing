@@ -2,3 +2,7 @@ venv
 Test signals from previous years
 preprocessed
 __pycache__
+gui_cache
+gui_logs
+Marginum Measurement Data-20261108
+crash.log

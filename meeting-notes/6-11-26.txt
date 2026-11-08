@@ -1,0 +1,7 @@
+maybe comparing suction versus resuction to approach the volume estimation task
+count peaks within a region feature?
+3rd objective: size correlated to number of peaks plot (should be linear correlation)
+presentation is only 8 minutes (include 1 minute for questions), the intro part can be very short
+report
+reflective diary
+app polishes

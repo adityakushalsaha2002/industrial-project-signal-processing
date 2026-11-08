@@ -1,29 +1,50 @@
 """
 Tumor volume estimation module: integrate signal values within regions containing peaks.
-Only regions with detected peaks contribute to the total tumor collection estimate.
+
+Estimates are reported as bounded ranges in dimensionless "units" (never
+physical volumes such as ml). This follows the report's convention of
+expressing uncertain quantities as lower-upper ranges instead of single
+values (e.g. a detection threshold "between 0.6 and 1.8 umol/L").
+
+Bounds rationale:
+- Baseline noise makes a positive, systematic contribution to a rectified
+  integral: pure noise with std sigma has an expected rectified offset of
+  sigma * sqrt(2/pi) per sample.
+- The point estimate subtracts exactly this expected offset (multiplier 1.0).
+- LOWER bound: assumes MORE of the signal is noise (subtracts 1.5x the
+  expected offset) -> conservative, high-confidence tumor content.
+- UPPER bound: assumes LESS of the signal is noise (subtracts 0.5x).
+For 'signed' integrals noise is zero-mean, so the band is instead the
+standard error of the noise sum (sigma * sqrt(n) / fs).
 """
 import numpy as np
 import json
 from pathlib import Path
 import pandas as pd
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from modules.region_detection import REGION_CONFIG
 from modules.peak_detection import PEAK_CONFIG
 
 VOLUME_CONFIG = {
-    'output_dir': './Test signals from previous years/Suction data/Volume',
-    
-    # Negative value handling: 'ignore', 'absolute', or 'signed'
-    'negative_handling': 'noise_corrected',   # Set to 'absolute' to count absolute values, 'signed' for raw integration
-    
-    # Integration parameters
-    'baseline_correction': True,     # Subtract region baseline before integration
-    'min_signal_value': 0,           # Floor for integration (prevents negative contributions if 'ignore')
+    'output_dir': Path('./Test signals from previous years/Suction data/Volume'),
+
+    # Negative value handling: 'ignore', 'absolute', 'signed', or 'noise_corrected'
+    'negative_handling': 'noise_corrected',
+
+    'baseline_correction': True,
+    'min_signal_value': 0,
+
+    # Bounded estimation: multipliers on the expected noise offset used for
+    # the lower / upper bounds (point estimate always uses 1.0).
+    'bound_offset_low': 1.5,    # subtract more noise -> conservative lower bound
+    'bound_offset_high': 0.5,   # subtract less noise -> optimistic upper bound
 }
-Path(VOLUME_CONFIG['output_dir']).mkdir(parents=True, exist_ok=True)
+VOLUME_CONFIG['output_dir'].mkdir(parents=True, exist_ok=True)
+
 
 def load_region_and_peak_data(region_bin_path):
     """Load region data and corresponding peak metadata."""
-    # Load region data
     meta_path = region_bin_path.with_suffix('.meta.json')
     meta = json.loads(meta_path.read_text())
 
@@ -34,23 +55,19 @@ def load_region_and_peak_data(region_bin_path):
     idx = 0
     for region_info in meta['stored_regions']:
         region_size = region_info['global_end'] - region_info['global_start']
-        region_data = centered[idx:idx + region_size]
         regions.append({
             'timestamp_sec': region_info['global_start'] / meta['target_fs'],
-            'data': region_data,
+            'data': centered[idx:idx + region_size],
             'duration_sec': region_info['duration_sec'],
         })
         idx += region_size
 
-    # Load peak metadata
-    peak_meta_name = f"{region_bin_path.stem}_peaks.meta.json"
-    peak_meta_path = PEAK_CONFIG['peaks_dir'] / peak_meta_name
-    
+    peak_meta_path = PEAK_CONFIG['peaks_dir'] / f"{region_bin_path.stem}_peaks.meta.json"
     if not peak_meta_path.exists():
         return None
-    
+
     peak_meta = json.loads(peak_meta_path.read_text())
-    
+
     return {
         'regions': regions,
         'num_regions': len(regions),
@@ -59,191 +76,210 @@ def load_region_and_peak_data(region_bin_path):
         'detected_peaks': peak_meta.get('detected_peaks', []),
     }
 
+
+def region_peak_counts(detected_peaks):
+    """Map region_index -> number of peaks, omitting regions with zero peaks.
+
+    This is the single source of truth for the 'region has peaks' gate, so
+    zero-peak records written by peak_detection can never mark a region
+    as active again.
+    """
+    return {
+        pr['region_index']: pr['num_peaks']
+        for pr in detected_peaks
+        if pr.get('num_peaks', 0) > 0
+    }
+
+
+def noise_parameters(data):
+    """Baseline noise std, expected rectified offset, and correlation factor k.
+
+    k = 1 + 2*sum_lag rho_l accounts for autocorrelation: the variance of a
+    sum of n correlated samples is sigma^2 * n * k, i.e. n_eff = n / k
+    effectively independent samples. Assumes the baseline segment is
+    representative of the noise throughout the region.
+    """
+    n_baseline = max(int(len(data) * 0.2), 10)
+    x = data[:n_baseline] - np.median(data[:n_baseline])
+    noise_std = float(np.std(x))
+    noise_expectation = noise_std * np.sqrt(2 / np.pi)
+
+    n = len(x)
+    max_lag = min(n // 4, 200)
+    x0 = x - x.mean()
+    denom = float(np.dot(x0, x0))
+    k = 1.0
+    if denom > 0:
+        for lag in range(1, max_lag + 1):
+            rho = float(np.dot(x0[:-lag], x0[lag:]) / denom)
+            if rho <= 0:
+                break
+            k += 2.0 * rho
+    return noise_std, noise_expectation, k
+
+
 def calculate_region_volume(region_data_result):
-    """Calculate integrated tumor volume for regions containing peaks."""
+    """Calculate bounded integrated tumor estimates for regions containing peaks."""
     regions = region_data_result['regions']
-    detected_peaks = region_data_result['detected_peaks']
     config = region_data_result['config']
     fs = region_data_result['meta']['target_fs']
-    
-    region_volumes = []
-    total_volume = 0
-    total_positive_volume = 0
-    total_negative_volume = 0
-    peak_count = 0
-    
+
+    peak_counts = region_peak_counts(region_data_result['detected_peaks'])
+
+    region_records = []
+    k_values = []
+    total_units = 0.0
+    total_units_lower = 0.0
+    total_units_upper = 0.0
+    total_positive_units = 0.0
+    total_negative_units = 0.0
+
+    mode = config['negative_handling']
+
+    Z = config.get('confidence_z', 2.0)   # band half-width in units of SE
+
     for reg_idx, region in enumerate(regions):
-        region_has_peaks = False
-        for peak_record in detected_peaks:
-            if peak_record['region_index'] == reg_idx:
-                region_has_peaks = True
-                peak_count += peak_record['num_peaks']
-                break
-        
-        if not region_has_peaks:
+        if reg_idx not in peak_counts:
             continue
-        
-        data = region['data'].copy()
-        
+
+        data = region['data'].copy().astype(np.float64)
+
         if config.get('baseline_correction', False):
-            baseline = np.median(data)
-            data = data - baseline
-        
-        # FIX 3: Noise-expectation-corrected rectified integral
-        # Instead of flooring negatives at zero, subtract expected noise contribution
-        if config['negative_handling'] == 'noise_corrected':
-            # Estimate noise floor from pre-peak baseline (first 20% of region)
-            n_baseline_samples = max(int(len(data) * 0.2), 10)
-            noise_std = np.std(data[:n_baseline_samples])
-            noise_expectation = noise_std * np.sqrt(2/np.pi)  # Expected |N(0,σ)|
-            
-            # Rectify with noise subtraction
-            rectified = np.maximum(data, 0) - noise_expectation
-            rectified = np.maximum(rectified, 0)  # Ensure no negative integral
-            region_integral = np.sum(rectified) / fs
-        elif config['negative_handling'] == 'ignore':
-            data = np.maximum(data, 0)
-            min_val = config.get('min_signal_value', 0)
-            data = np.maximum(data, min_val)
-            region_integral = np.sum(data) / fs
-        elif config['negative_handling'] == 'absolute':
-            data = np.abs(data)
-            region_integral = np.sum(data) / fs
+            data = data - np.median(data)
+
+        noise_std, noise_expectation, k = noise_parameters(data)
+        pos = neg = None
+
+        if mode in ('noise_corrected', 'ignore', 'absolute'):
+            base = np.abs(data) if mode == 'absolute' else data
+            if mode == 'ignore':
+                base = np.maximum(base, config.get('min_signal_value', 0))
+            if mode == 'noise_corrected':
+                base = data
+                base = np.maximum(base - noise_expectation, 0)
+            point = np.sum(base) / fs
+            se = (noise_std * np.sqrt(1 - 2 / np.pi)
+                * np.sqrt(len(data) * k) / fs)
+            lower, upper = point - Z * se, point + Z * se
         else:  # signed
-            region_integral = np.sum(data) / fs
-            positive_sum = np.sum(np.maximum(data, 0)) / fs
-            negative_sum = np.sum(np.minimum(data, 0)) / fs
-            total_positive_volume += positive_sum
-            total_negative_volume += negative_sum
-        
-        region_volumes.append({
+            point = np.sum(data) / fs
+            se = noise_std * np.sqrt(len(data) * k) / fs
+            lower, upper = point - Z * se, point + Z * se
+
+        region_records.append({
             'region_index': reg_idx,
             'region_start_sec': region['timestamp_sec'],
             'duration_sec': region['duration_sec'],
-            'peak_count_in_region': sum(1 for p in detected_peaks if p['region_index'] == reg_idx),
-            'integrated_volume': round(region_integral, 4),
-            'max_amplitude': int(np.max(data)),
-            'mean_amplitude': round(np.mean(data), 2),
-            'noise_std': round(noise_std, 2) if config['negative_handling'] == 'noise_corrected' else None,
+            'peak_count_in_region': peak_counts[reg_idx],   # actual peaks, not record count
+            'integrated_units': round(point, 4),
+            'integrated_units_lower': round(lower, 4),
+            'integrated_units_upper': round(upper, 4),
+            'max_amplitude': round(float(np.max(data)), 4),
+            'mean_amplitude': round(float(np.mean(data)), 2),
+            'noise_std': round(noise_std, 2),
+            'bounds_method': f'n_eff SE band, z={Z} '
+                 f'(median k over regions: {np.median(k_values):.2f})'
         })
-        
-        total_volume += region_integral
-        # ... track positive/negative separately if needed
-    
+        k_values.append(k)
+
+        total_units += point
+        total_units_lower += lower
+        total_units_upper += upper
+        if pos is not None:
+            total_positive_units += pos
+            total_negative_units += neg
+
     return {
-        'total_volume_units': round(total_volume, 4),
-        'total_positive_volume': round(total_positive_volume, 4),
-        'total_negative_volume': round(total_negative_volume, 4),
-        'total_peak_count': peak_count,
-        'num_regions_with_peaks': len(region_volumes),
+        'unit': 'units',
+        'bounds_method': (f'n_eff SE band, z={Z} '
+                          f'(median k over regions: {np.median(k_values):.2f})'),
+        'total_units': round(total_units, 4),
+        'total_units_lower': round(total_units_lower, 4),
+        'total_units_upper': round(total_units_upper, 4),
+        'total_positive_units': round(total_positive_units, 4),
+        'total_negative_units': round(total_negative_units, 4),
+        'total_peak_count': sum(peak_counts.values()),
+        'num_regions_with_peaks': len(region_records),
         'total_regions': len(regions),
-        'region_details': region_volumes,
+        'region_details': region_records,
     }
 
+
+def process_volume_file(region_bin_path_str):
+    """Worker entry point: load data INSIDE the worker so disk I/O parallelizes."""
+    region_bin_path = Path(region_bin_path_str)
+
+    region_data_result = load_region_and_peak_data(region_bin_path)
+    if region_data_result is None:
+        return {'file': region_bin_path.name, 'status': 'skipped', 'reason': 'no peaks detected'}
+
+    region_data_result['config'] = VOLUME_CONFIG
+    result = calculate_region_volume(region_data_result)
+
+    if result['num_regions_with_peaks'] == 0:
+        return {'file': region_bin_path.name, 'status': 'skipped', 'reason': 'no peaks in regions'}
+
+    serializable_config = {k: str(v) if isinstance(v, Path) else v
+                           for k, v in VOLUME_CONFIG.items()}
+    volume_meta_path = VOLUME_CONFIG['output_dir'] / (region_bin_path.stem + '_volume.meta.json')
+    volume_meta_path.write_text(json.dumps({
+        'source_file': region_bin_path.name,
+        'volume_config': serializable_config,
+        **result,
+    }, indent=2))
+
+    return {'file': region_bin_path.name, 'status': 'completed', **result}
+
+
 def run_batch_volume_estimation(num_workers=None):
-    """Process all region files and calculate tumor volume estimates."""
-    import multiprocessing as mp
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    
+    """Process all region files and calculate bounded tumor estimates."""
     if num_workers is None:
         num_workers = max(1, mp.cpu_count() - 1)
-    
-    # Convert string back to Path for file operations
-    output_dir = Path(VOLUME_CONFIG['output_dir'])
+
     region_files = sorted(REGION_CONFIG['output_dir'].glob('*_regions.bin'))
-    
-    print(f"Processing {len(region_files)} region files for volume estimation...")
-    
-    all_results = []
-    
+    print(f"Processing {len(region_files)} region files for bounded estimation...")
+
+    results = []
+    todo = []
+    for region_bin_path in region_files:
+        volume_meta_path = VOLUME_CONFIG['output_dir'] / (region_bin_path.stem + '_volume.meta.json')
+        peaks_exist = (PEAK_CONFIG['peaks_dir'] / f"{region_bin_path.stem}_peaks.meta.json").exists()
+
+        if volume_meta_path.exists():
+            results.append({'file': region_bin_path.name, 'status': 'skipped', 'reason': 'already exists'})
+            print(f"⏭️ SKIPPED: {region_bin_path.name} (already estimated)")
+        elif not peaks_exist:
+            results.append({'file': region_bin_path.name, 'status': 'skipped', 'reason': 'no peaks file'})
+        else:
+            todo.append(region_bin_path)
+
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = {}
-        
-        for region_bin_path in region_files:
-            try:
-                # Prepare data for worker
-                region_data_result = load_region_and_peak_data(region_bin_path)
-                
-                if region_data_result is None:
-                    print(f"⏭️ SKIPPED: {region_bin_path.name} (no peaks detected)")
-                    all_results.append({
-                        'file': region_bin_path.name,
-                        'status': 'skipped',
-                        'reason': 'no peaks',
-                    })
-                    continue
-                
-                region_data_result['config'] = VOLUME_CONFIG
-                futures[executor.submit(calculate_region_volume, region_data_result)] = region_bin_path
-                
-            except Exception as e:
-                print(f"⚠️ ERROR loading {region_bin_path.name}: {e}")
-                all_results.append({
-                    'file': region_bin_path.name,
-                    'status': 'error',
-                    'reason': str(e),
-                })
-        
+        futures = {executor.submit(process_volume_file, str(p)): p for p in todo}
         for future in as_completed(futures):
             result = future.result()
-            region_bin_path = futures[future]
-            
-            if result['num_regions_with_peaks'] == 0:
-                print(f"⏭️ SKIPPED: {region_bin_path.name} (no peaks in any region)")
-                all_results.append({
-                    'file': region_bin_path.name,
-                    'status': 'skipped',
-                    'reason': 'no peaks in regions',
-                })
-            else:
-                print(f"✅ {region_bin_path.name}: {result['total_peak_count']} peaks | "
-                      f"{result['total_volume_units']:.2f} units | "
+            results.append(result)
+            if result['status'] == 'completed':
+                print(f"✅ {result['file']}: {result['total_peak_count']} peaks | "
+                      f"{result['total_units_lower']:.2f}-{result['total_units_upper']:.2f} units "
+                      f"(point {result['total_units']:.2f}) | "
                       f"{result['num_regions_with_peaks']}/{result['total_regions']} regions")
-                
-                # Save individual file volume metadata (use string version of path for JSON)
-                volume_meta_path = output_dir / (region_bin_path.stem + '_volume.meta.json')
-                
-                # Create a serializable version of the config (convert Paths to strings)
-                serializable_config = {k: str(v) if isinstance(v, Path) else v 
-                                      for k, v in VOLUME_CONFIG.items()}
-                
-                volume_meta = {
-                    'source_file': region_bin_path.name,
-                    'volume_config': serializable_config,
-                    **result,
-                }
-                volume_meta_path.write_text(json.dumps(volume_meta, indent=2))
-                
-                all_results.append({
-                    'file': region_bin_path.name,
-                    'status': 'completed',
-                    'total_volume_units': result['total_volume_units'],
-                    'total_positive_volume': result['total_positive_volume'],
-                    'total_negative_volume': result['total_negative_volume'],
-                    'total_peak_count': result['total_peak_count'],
-                    'num_regions_with_peaks': result['num_regions_with_peaks'],
-                    'total_regions': result['total_regions'],
-                })
-    
-    # Save summary CSV
-    df_summary = pd.DataFrame(all_results)
-    df_summary.to_csv(output_dir / 'volume_estimation_summary.csv', index=False)
-    
+            else:
+                print(f"⏭️ SKIPPED: {result['file']} ({result['reason']})")
+
+    df_summary = pd.DataFrame(results)
+    df_summary.to_csv(VOLUME_CONFIG['output_dir'] / 'volume_estimation_summary.csv', index=False)
+
+    completed_results = [r for r in results if r.get('status') == 'completed']
     print(f"\n{'='*60}")
-    print(f"BATCH COMPLETE! Processed {len([r for r in all_results if r.get('status') == 'completed'])} files")
-    print(f"{'='*60}")
-    
-    # Show summary statistics
-    completed_results = [r for r in all_results if r.get('status') == 'completed']
+    print(f"BATCH COMPLETE! Processed {len(completed_results)} files")
     if completed_results:
-        total_all_files = sum(r['total_volume_units'] for r in completed_results)
+        grand_lower = sum(r['total_units_lower'] for r in completed_results)
+        grand_upper = sum(r['total_units_upper'] for r in completed_results)
+        grand_point = sum(r['total_units'] for r in completed_results)
         total_all_peaks = sum(r['total_peak_count'] for r in completed_results)
-        avg_per_file = total_all_files / len(completed_results)
-        
-        print(f"\n📊 SUMMARY:")
         print(f"   Total files processed: {len(completed_results)}")
-        print(f"   Total tumor volume: {total_all_files:.2f} units")
+        print(f"   Total estimate: {grand_lower:.2f}-{grand_upper:.2f} units "
+              f"(point {grand_point:.2f})")
         print(f"   Total peaks detected: {total_all_peaks}")
-        print(f"   Average per file: {avg_per_file:.2f} units")
-    
-    return all_results
+
+    return results

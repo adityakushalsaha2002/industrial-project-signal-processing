@@ -34,6 +34,9 @@ def plot_full_signal_with_peaks(bin_path_str):
     """
     bin_path = Path(bin_path_str)  # Convert string back to Path
     VISUALIZATION_CONFIG['results_dir'].mkdir(parents=True, exist_ok=True)
+    output_path = VISUALIZATION_CONFIG['results_dir'] / (bin_path.stem + '_full_signal.png')
+    if output_path.exists():
+        return {'status': 'skipped', 'file': bin_path.name}
 
     # Load preprocessed data
     meta_path = bin_path.with_suffix('.meta.json')
@@ -101,17 +104,35 @@ def plot_full_signal_with_peaks(bin_path_str):
                       label=f'Detected peaks (n={num_peaks})')
 
     # =============================
-    # STEP 4: Load VOLUME data
+    # STEP 4: Load VOLUME data (n_eff SE band, dimensionless units)
     # =============================
     volume_meta_name = f"{bin_path.stem}_regions_volume.meta.json"
-    volume_meta_path = VOLUME_DIR / volume_meta_name  # Use VOLUME_DIR (Path object)
-    
+    volume_meta_path = VOLUME_DIR / volume_meta_name
+
     volume_display = ""
+    bounds_annotation = ""
+    total_units = None
+    units_range = None
+    volume_meta = None
     if volume_meta_path.exists():
         volume_meta = json.loads(volume_meta_path.read_text())
-        total_volume = volume_meta.get('total_volume_units', 0)
+        total_units = volume_meta.get('total_units', 0)
+        lower = volume_meta.get('total_units_lower', total_units)
+        upper = volume_meta.get('total_units_upper', total_units)
+        units_range = f"{lower:.1f}-{upper:.1f}"
         num_regions_with_peaks = volume_meta.get('num_regions_with_peaks', 0)
-        volume_display = f"Tumor volume: {total_volume:.1f} units | Regions with peaks: {num_regions_with_peaks}"
+        total_peaks = volume_meta.get('total_peak_count', 0)
+
+        volume_display = (f"Estimate: {units_range} units (point {total_units:.1f}) | "
+                          f"Regions w/ peaks: {num_regions_with_peaks}")
+
+        # Optional annotations — present only if the volume module logs them
+        region_details = volume_meta.get('region_details', [])
+        ks = [r.get('correlation_factor_k') for r in region_details]
+        ks = [k for k in ks if k is not None]
+        if ks:
+            bounds_annotation = (f"Band: {volume_meta.get('bounds_method', 'n_eff SE')} | "
+                                 f"median k = {np.median(ks):.2f}")
     
     # =============================
     # Labels and title
@@ -119,12 +140,18 @@ def plot_full_signal_with_peaks(bin_path_str):
     ax.set_xlabel('Time (seconds)', fontsize=10)
     ax.set_ylabel('Amplitude (centered)', fontsize=10)
     
+    # Title assembly
     title_parts = [f"{bin_path.name}",
-                  f"Duration: {meta['duration_sec']:.1f}s | {meta['samples']:,} samples"]
+                   f"Duration: {meta['duration_sec']:.1f}s | {meta['samples']:,} samples"]
     if num_peaks > 0:
-        title_parts.append(f"| Peaks: {num_peaks}")
+        title_parts.append(f"Peaks: {num_peaks}")
     if volume_display:
-        title_parts.append(f"| {volume_display}")
+        title_parts.append(volume_display)
+    ax.set_title("\n".join(title_parts), fontsize=11, fontweight='bold')
+
+    if bounds_annotation:
+        ax.text(0.01, 0.98, bounds_annotation, transform=ax.transAxes,
+                fontsize=8, va='top', alpha=0.7, style='italic')
     
     ax.set_title("\n".join(title_parts), fontsize=11, fontweight='bold')
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -141,7 +168,8 @@ def plot_full_signal_with_peaks(bin_path_str):
         'output_file': str(output_path),
         'num_regions': regions_found,
         'num_peaks': num_peaks,
-        'tumor_volume': volume_meta.get('total_volume_units', 0) if volume_meta_path.exists() else None
+        'total_units': total_units,
+        'units_range': units_range,
     }
 
 def run_full_batch_visualization(num_workers=None):
@@ -160,7 +188,7 @@ def run_full_batch_visualization(num_workers=None):
         for future in as_completed(futures):
             result = future.result()
             status = "✅" if result.get('status') == 'completed' else "❌"
-            vol_info = f"Volume: {result.get('tumor_volume', 0):.1f}" if result.get('tumor_volume') is not None else "No volume"
+            vol_info = (f"Units: {result.get('units_range', 'n/a')}" if result.get('units_range') is not None else "No estimate")
             print(f"{status}: {result['file']} | Regions: {result.get('num_regions', 0)} | Peaks: {result.get('num_peaks', 0)} | {vol_info}")
             results.append(result)
 

@@ -13,7 +13,7 @@ PEAK_CONFIG = {
 
     # Peak detection parameters
     'min_peak_height': 25,          # Minimum height above baseline (in centered units)
-    'min_peak_percentage': 5,       # Scales with file amplitude
+    'min_peak_sn': 25,              # Minimum number of stds above noise. This is OK because noise_floor_std is similar across files.
     'min_distance_samples': 10,     # min_distance_samples/Hz = seconds between peaks, where Hz is the downsampled Hz
     'prominence': 0,                # Peak prominence threshold
     'prominence_percentage': 0,     # Scales with file amplitude
@@ -63,7 +63,11 @@ def detect_peaks_in_regions(region_data_result):
         p99 = np.percentile(data, 99)
         robust_amplitude = p99 - p50  # Much less sensitive to outliers
         
-        adaptive_height = max(PEAK_CONFIG['min_peak_height'], robust_amplitude * PEAK_CONFIG['min_peak_percentage'] / 100)
+        noise_std = region_data_result['meta'].get('noise_floor_std', 1.0)
+        adaptive_height = max(
+            PEAK_CONFIG['min_peak_height'],
+            noise_std * PEAK_CONFIG['min_peak_sn']
+        )
         adaptive_prominence = max(PEAK_CONFIG['prominence'], robust_amplitude * PEAK_CONFIG['prominence_percentage'] / 100)
 
         peaks, properties = find_peaks(
