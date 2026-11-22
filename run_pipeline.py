@@ -2,6 +2,15 @@
 """
 Main pipeline orchestration script.
 """
+import sys
+
+# Status lines use emoji; keep them from crashing on Windows consoles/pipes
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):
+        pass
+
 from modules.preprocessing import run_batch_preprocessing
 from modules.region_detection import run_batch_region_extraction
 from modules.peak_detection import run_batch_peak_detection

@@ -16,7 +16,18 @@ Bounds rationale:
 - UPPER bound: assumes LESS of the signal is noise (subtracts 0.5x).
 For 'signed' integrals noise is zero-mean, so the band is instead the
 standard error of the noise sum (sigma * sqrt(n) / fs).
+
+Millilitre estimate:
+- The unit range is converted to ml with one fixed scalar (ml_per_unit).
+  It is blind to concentration: it was fitted (least squares through the
+  origin) on the labelled 'high_1gr/2gr/3gr' recordings, assuming tissue
+  density ~1 g/ml so that 1 gr ~ 1 ml.
+- Each resuction sends the same tissue through the detector again, so the
+  ml estimate is divided by the number of resuctions named in the file name
+  (e.g. '3 resuctions', 'resuc x2', '2resuc'; a bare 'resuc' counts as 1).
+- A negative lower bound is clipped to 0 ml.
 """
+import re
 import numpy as np
 import json
 from pathlib import Path
@@ -39,8 +50,87 @@ VOLUME_CONFIG = {
     # the lower / upper bounds (point estimate always uses 1.0).
     'bound_offset_low': 1.5,    # subtract more noise -> conservative lower bound
     'bound_offset_high': 0.5,   # subtract less noise -> optimistic upper bound
+
+    # Units -> ml scalar, calibrated on the labelled 1/2/3 gr recordings
+    # (point estimates of 10 files, 1 g ~ 1 ml). Concentration-independent.
+    'ml_per_unit': 0.0023,
 }
 VOLUME_CONFIG['output_dir'].mkdir(parents=True, exist_ok=True)
+
+_NUM_WORDS = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+              'single': 1, 'double': 2, 'twice': 2, 'triple': 3, 'thrice': 3}
+_NUM = r'(\d+|' + '|'.join(_NUM_WORDS) + r')'
+_RESUC = r're-?suc\w*'
+
+
+def _base(name):
+    """Lower-case file name without a known extension (raw files may have none,
+    and '1.5ml' must not lose its decimal part to Path.stem)."""
+    s = Path(str(name)).name.lower()
+    return re.sub(r'(_regions)?\.(csv|txt|tsv|bin|json)$', '', s)
+
+
+def _to_int(token):
+    token = token.lower()
+    return int(token) if token.isdigit() else _NUM_WORDS[token]
+
+
+def parse_resuctions(name):
+    """Number of resuctions named in a file name (0 if none).
+
+    Recognised: '3 resuctions', '3x resuction', '2resuc', 'resuc2',
+    'resuc x2', 'resuction (3)', 'double resuction'. A bare 'resuc'/'re-suction'
+    counts as 1. A number joined by '_' before 'resuc' (as in
+    'high_1gr_2_resuc') is a trial index, not a count, so it is ignored.
+    """
+    s = _base(name)
+    if not re.search(_RESUC, s):
+        return 0
+    patterns = (
+        _NUM + r'(?:\s*x)?\s*' + _RESUC,                    # '3 resuctions', '3x resuc', '2resuc'
+        _RESUC + r'\s*(?:x\s*|\(\s*)?(\d+)',                # 'resuc2', 'resuc x2', 'resuction (3)'
+    )
+    for pat in patterns:
+        m = re.search(r'(?<![a-z0-9.])' + pat if pat.startswith(_NUM) else pat, s)
+        if m:
+            n = _to_int(m.group(1))
+            if n > 0:
+                return n
+    return 1
+
+
+def parse_labelled_ml(name):
+    """Labelled tissue amount in the file name as ml (1 g ~ 1 ml), or None.
+
+    Only used to report the label next to the estimate; the estimate itself
+    never reads it.
+    """
+    s = _base(name)
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(ml|gr|g)(?![a-z])', s)
+    return float(m.group(1).replace(',', '.')) if m else None
+
+
+def add_ml_estimate(result, name, config=VOLUME_CONFIG):
+    """Add ml fields (point, lower, upper) to a calculate_region_volume result."""
+    resuctions = parse_resuctions(name)
+    divisor = max(resuctions, 1)
+    k = config.get('ml_per_unit', VOLUME_CONFIG['ml_per_unit'])
+
+    def ml(units):
+        return round(max(units * k / divisor, 0.0), 3)
+
+    result.update({
+        'ml_per_unit': k,
+        'resuctions': resuctions,
+        'ml_divisor': divisor,
+        'total_ml': ml(result['total_units']),
+        'total_ml_lower': ml(result['total_units_lower']),
+        'total_ml_upper': ml(result['total_units_upper']),
+        'labelled_ml': parse_labelled_ml(name),
+    })
+    for r in result.get('region_details', []):
+        r['integrated_ml'] = round(r['integrated_units'] * k / divisor, 4)
+    return result
 
 
 def load_region_and_peak_data(region_bin_path):
@@ -148,6 +238,7 @@ def calculate_region_volume(region_data_result):
             data = data - np.median(data)
 
         noise_std, noise_expectation, k = noise_parameters(data)
+        k_values.append(k)
         pos = neg = None
 
         if mode in ('noise_corrected', 'ignore', 'absolute'):
@@ -180,7 +271,6 @@ def calculate_region_volume(region_data_result):
             'bounds_method': f'n_eff SE band, z={Z} '
                  f'(median k over regions: {np.median(k_values):.2f})'
         })
-        k_values.append(k)
 
         total_units += point
         total_units_lower += lower
@@ -215,6 +305,7 @@ def process_volume_file(region_bin_path_str):
 
     region_data_result['config'] = VOLUME_CONFIG
     result = calculate_region_volume(region_data_result)
+    add_ml_estimate(result, region_bin_path.name)
 
     if result['num_regions_with_peaks'] == 0:
         return {'file': region_bin_path.name, 'status': 'skipped', 'reason': 'no peaks in regions'}
@@ -262,6 +353,9 @@ def run_batch_volume_estimation(num_workers=None):
                 print(f"✅ {result['file']}: {result['total_peak_count']} peaks | "
                       f"{result['total_units_lower']:.2f}-{result['total_units_upper']:.2f} units "
                       f"(point {result['total_units']:.2f}) | "
+                      f"{result['total_ml_lower']:.2f}-{result['total_ml_upper']:.2f} ml "
+                      f"(point {result['total_ml']:.2f}"
+                      f"{', ÷%d resuctions' % result['ml_divisor'] if result['ml_divisor'] > 1 else ''}) | "
                       f"{result['num_regions_with_peaks']}/{result['total_regions']} regions")
             else:
                 print(f"⏭️ SKIPPED: {result['file']} ({result['reason']})")
@@ -281,5 +375,8 @@ def run_batch_volume_estimation(num_workers=None):
         print(f"   Total estimate: {grand_lower:.2f}-{grand_upper:.2f} units "
               f"(point {grand_point:.2f})")
         print(f"   Total peaks detected: {total_all_peaks}")
+        print(f"   Total estimate: {sum(r['total_ml_lower'] for r in completed_results):.2f}-"
+              f"{sum(r['total_ml_upper'] for r in completed_results):.2f} ml "
+              f"(point {sum(r['total_ml'] for r in completed_results):.2f})")
 
     return results

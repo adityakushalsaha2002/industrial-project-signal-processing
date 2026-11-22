@@ -113,6 +113,7 @@ def plot_full_signal_with_peaks(bin_path_str):
     bounds_annotation = ""
     total_units = None
     units_range = None
+    ml_estimate = None
     volume_meta = None
     if volume_meta_path.exists():
         volume_meta = json.loads(volume_meta_path.read_text())
@@ -120,10 +121,17 @@ def plot_full_signal_with_peaks(bin_path_str):
         lower = volume_meta.get('total_units_lower', total_units)
         upper = volume_meta.get('total_units_upper', total_units)
         units_range = f"{lower:.1f}-{upper:.1f}"
+        if 'total_ml' in volume_meta:
+            ml_estimate = f"{volume_meta['total_ml_lower']:.2f}-{volume_meta['total_ml_upper']:.2f}"
         num_regions_with_peaks = volume_meta.get('num_regions_with_peaks', 0)
         total_peaks = volume_meta.get('total_peak_count', 0)
 
-        volume_display = (f"Estimate: {units_range} units (point {total_units:.1f}) | "
+        ml_text = ""
+        if ml_estimate is not None:
+            divisor = volume_meta.get('ml_divisor', 1)
+            ml_text = (f"{ml_estimate} ml (point {volume_meta['total_ml']:.2f} ml"
+                       + (f", ÷{divisor} resuctions" if divisor > 1 else "") + ") | ")
+        volume_display = (f"Estimate: {units_range} units (point {total_units:.1f}) | {ml_text}"
                           f"Regions w/ peaks: {num_regions_with_peaks}")
 
         # Optional annotations — present only if the volume module logs them
@@ -170,6 +178,7 @@ def plot_full_signal_with_peaks(bin_path_str):
         'num_peaks': num_peaks,
         'total_units': total_units,
         'units_range': units_range,
+        'ml_range': ml_estimate,
     }
 
 def run_full_batch_visualization(num_workers=None):
@@ -188,7 +197,8 @@ def run_full_batch_visualization(num_workers=None):
         for future in as_completed(futures):
             result = future.result()
             status = "✅" if result.get('status') == 'completed' else "❌"
-            vol_info = (f"Units: {result.get('units_range', 'n/a')}" if result.get('units_range') is not None else "No estimate")
+            vol_info = (f"Units: {result.get('units_range', 'n/a')} | ml: {result.get('ml_range') or 'n/a'}"
+                        if result.get('units_range') is not None else "No estimate")
             print(f"{status}: {result['file']} | Regions: {result.get('num_regions', 0)} | Peaks: {result.get('num_peaks', 0)} | {vol_info}")
             results.append(result)
 

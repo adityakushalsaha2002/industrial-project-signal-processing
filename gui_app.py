@@ -104,7 +104,7 @@ def secs(t):
     return f"{t:.2f}s" if t < 10 else f"{t:.1f}s"
 
 
-def step_list(pre, rd, pk):
+def step_list(pre, rd, pk, tv):
     fs, cfg, rcfg, pcfg = pre.CFG["target_fs"], pre.CFG, rd.REGION_CONFIG, pk.PEAK_CONFIG
     return [
         ("prepare", "Check the file", f"Find the {cfg['adc_column']} column; comma or tab separated"),
@@ -119,7 +119,9 @@ def step_list(pre, rd, pk):
         ("analyse", "Detect peaks",
          f"At least {pcfg['min_peak_height']} tall, or {pcfg.get('min_peak_sn', 0):g}× the noise floor "
          f"(≈{pcfg.get('min_peak_sn', 0) * 1.5:.0f} units), and ≥ {pcfg['min_distance_samples'] / fs:g}s apart"),
-        ("analyse", "Estimate tumor volume", "Add up the signal inside regions with peaks"),
+        ("analyse", "Estimate tumor volume",
+         f"Add up the signal inside regions with peaks; × {tv.VOLUME_CONFIG['ml_per_unit']:g} ml per unit, "
+         f"÷ resuctions named in the file"),
     ]
 
 
@@ -243,9 +245,12 @@ class PipelineWorker(QObject):
         self.progress.emit(0.8)
 
         rows_out, starts, ends, volume, reg_peaks, reg_vol = [], [], [], 0.0, [], []
+        lo = hi = 0.0
+        ml = dict(total_ml=0.0, total_ml_lower=0.0, total_ml_upper=0.0, resuctions=tv.parse_resuctions(path.name),
+                  ml_divisor=max(tv.parse_resuctions(path.name), 1), labelled_ml=tv.parse_labelled_ml(path.name))
         if reg["num_regions"] == 0:
             self._done(5, "no active regions, so no peaks")
-            self._done(6, "0 units")
+            self._done(6, "0 units · 0 ml")
         else:
             self._start(5)
             loaded = pk.load_region_data(region_bin)
@@ -260,7 +265,10 @@ class PipelineWorker(QObject):
             point = float(vres["total_units"])
             lo = float(vres["total_units_lower"])
             hi = float(vres["total_units_upper"])
-            self._done(6, f"{lo:,.1f}–{hi:,.1f} units (point {point:,.1f})")
+            ml = tv.add_ml_estimate(vres, path.name)
+            div = f" · ÷{ml['ml_divisor']} resuctions" if ml["ml_divisor"] > 1 else ""
+            self._done(6, f"{ml['total_ml_lower']:.2f}–{ml['total_ml_upper']:.2f} ml (point {ml['total_ml']:.2f}){div} · "
+                          f"{lo:,.1f}–{hi:,.1f} units (point {point:,.1f})")
             volume = point
             vol_by_region = {d["region_index"]: d["integrated_units"]
                              for d in vres["region_details"]}
@@ -279,11 +287,13 @@ class PipelineWorker(QObject):
         self.progress.emit(1.0)
         events = pd.DataFrame(rows_out, columns=["peak_time_s", "height", "region_start_s", "region_end_s",
                                                  "region_volume_units"]).sort_values("peak_time_s", ignore_index=True)
-        log.info("%s: %d regions, %d peaks, volume %.2f units, %.1f s", path.name, reg["num_regions"], len(events),
-                 volume, time.time() - t_all)
+        log.info("%s: %d regions, %d peaks, volume %.2f units (%.2f ml), %.1f s", path.name, reg["num_regions"],
+                 len(events), volume, ml["total_ml"], time.time() - t_all)
         return dict(name=path.name, fs=fs, duration=float(meta["duration_sec"]), signal=signal, events=events,
                     starts=np.array(starts), ends=np.array(ends), n_regions=int(reg["num_regions"]), volume=volume,
-                    volume_lower=lo, volume_upper=hi, reg_peaks=np.array(reg_peaks), reg_vol=np.array(reg_vol))
+                    volume_lower=lo, volume_upper=hi, ml=float(ml["total_ml"]), ml_lower=float(ml["total_ml_lower"]),
+                    ml_upper=float(ml["total_ml_upper"]), ml_divisor=int(ml["ml_divisor"]),
+                    labelled_ml=ml["labelled_ml"], reg_peaks=np.array(reg_peaks), reg_vol=np.array(reg_vol))
 
 
 def label(text="", dim=False, caps=False, size=None, bold=False, color=None, wrap=False):
@@ -523,11 +533,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         steps = QtWidgets.QVBoxLayout()
         steps.setSpacing(2)
-        pre, rd, pk, _ = self.mods
+        pre, rd, pk, tv = self.mods
         self.steps, self.step_titles = [], []
         group_titles = {"prepare": "BEFORE ANALYSIS · PREPARE THE DATA", "analyse": "ANALYSIS"}
         last_group = None
-        for n, (group, title, detail) in enumerate(step_list(pre, rd, pk), 1):
+        for n, (group, title, detail) in enumerate(step_list(pre, rd, pk, tv), 1):
             if group != last_group:
                 if last_group is not None:
                     steps.addSpacing(10)
@@ -854,8 +864,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.c_peaks[1].setText(str(n))
         self.c_peaks[1].setStyleSheet(f"font-size:34px;font-weight:600;color:{C['text']}")
         self.c_peaks[2].setText(f"{n / r['duration'] * 60:.1f} per minute" if n else "No tumor detected")
-        self.c_volume[1].setText(f"{r['volume']:,.1f}")
-        self.c_volume[2].setText("units")
+        self.c_volume[1].setText(f"{r['ml']:,.2f} ml")
+        sub = [f"range {r['ml_lower']:,.2f}–{r['ml_upper']:,.2f} ml",
+               f"{r['volume']:,.1f} units ({r['volume_lower']:,.1f}–{r['volume_upper']:,.1f})"]
+        if r["ml_divisor"] > 1:
+            sub.append(f"÷{r['ml_divisor']} for resuctions in the file name")
+        if r.get("labelled_ml") is not None:
+            sub.append(f"label in file name: {r['labelled_ml']:g} ml")
+        self.c_volume[2].setText("\n".join(sub))
         self.c_regions[1].setText(f"{r['n_regions']:,}")
         self.c_regions[2].setText("parts of the signal with activity")
         self.c_length[1].setText(f"{int(r['duration'] // 60)}min {int(r['duration'] % 60)}s"
@@ -1017,7 +1033,8 @@ def selftest(csv_path, out_path):
         worker = PipelineWorker(load_modules(), Path(csv_path))
         res = worker._run()
         summary = {"ok": True, "file": res["name"], "peaks": len(res["events"]), "regions": res["n_regions"],
-                   "volume_units": res["volume"], "duration_s": res["duration"]}
+                   "volume_units": res["volume"], "volume_ml": res["ml"],
+                   "volume_ml_range": [res["ml_lower"], res["ml_upper"]], "duration_s": res["duration"]}
     except Exception as exc:
         log.exception("selftest failed")
         summary = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
