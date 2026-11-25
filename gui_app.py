@@ -57,6 +57,8 @@ QToolButton[primary="true"], QPushButton[primary="true"] {{ background: {C['blue
 QToolButton[primary="true"]:disabled {{ background: {C['blue_off']}; border-color: {C['blue_off']}; color: white; }}
 QToolButton[stop="true"] {{ color: {C['red_text']}; border-color: {C['tumor']}; }}
 QPushButton[small="true"] {{ padding: 4px 10px; min-width: 18px; }}
+QPushButton[seg="true"] {{ padding: 4px 12px; border-radius: 7px; }}
+QPushButton[seg="true"]:checked {{ background: {C['blue']}; color: white; border-color: {C['blue']}; }}
 QFrame[card="true"] {{ background: {C['card']}; border-radius: 14px; }}
 QLabel[dim="true"] {{ color: {C['dim']}; }}
 QLabel[caps="true"] {{ color: {C['dim']}; font-size: 11px; font-weight: 600; letter-spacing: 1px; }}
@@ -246,6 +248,7 @@ class PipelineWorker(QObject):
 
         rows_out, starts, ends, volume, reg_peaks, reg_vol = [], [], [], 0.0, [], []
         lo = hi = 0.0
+        reg_details = []
         ml = dict(total_ml=0.0, total_ml_lower=0.0, total_ml_upper=0.0, resuctions=tv.parse_resuctions(path.name),
                   ml_divisor=max(tv.parse_resuctions(path.name), 1), labelled_ml=tv.parse_labelled_ml(path.name))
         if reg["num_regions"] == 0:
@@ -270,6 +273,7 @@ class PipelineWorker(QObject):
             self._done(6, f"{ml['total_ml_lower']:.2f}–{ml['total_ml_upper']:.2f} ml (point {ml['total_ml']:.2f}){div} · "
                           f"{lo:,.1f}–{hi:,.1f} units (point {point:,.1f})")
             volume = point
+            reg_details = vres["region_details"]
             vol_by_region = {d["region_index"]: d["integrated_units"]
                              for d in vres["region_details"]}
 
@@ -293,7 +297,9 @@ class PipelineWorker(QObject):
                     starts=np.array(starts), ends=np.array(ends), n_regions=int(reg["num_regions"]), volume=volume,
                     volume_lower=lo, volume_upper=hi, ml=float(ml["total_ml"]), ml_lower=float(ml["total_ml_lower"]),
                     ml_upper=float(ml["total_ml_upper"]), ml_divisor=int(ml["ml_divisor"]),
-                    labelled_ml=ml["labelled_ml"], reg_peaks=np.array(reg_peaks), reg_vol=np.array(reg_vol))
+                    labelled_ml=ml["labelled_ml"], reg_peaks=np.array(reg_peaks), reg_vol=np.array(reg_vol),
+                    reg_details=reg_details,
+                    ml_scale=tv.VOLUME_CONFIG["ml_per_unit"] / max(int(ml["ml_divisor"]), 1))
 
 
 def label(text="", dim=False, caps=False, size=None, bold=False, color=None, wrap=False):
@@ -479,7 +485,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.b_theme.setText("☀  Light mode" if dark else "☾  Dark mode")
         for row in self.steps:
             row.restyle()
-        self.plot.setBackground(C["plot_bg"])
+        for w in (self.plot, self.line_plot, self.bubble_plot):
+            w.setBackground(C["plot_bg"])
+        if self.result is not None:
+            self._draw_line(self.result)
+            self._draw_bubbles(self.result)
         self.load_bar.setStyleSheet("QProgressBar{max-height:10px;min-height:10px;border-radius:5px}"
                                     f"QProgressBar::chunk{{background:{C['tumor']};border-radius:5px}}")
         if self.result is not None:
@@ -643,7 +653,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
         pc = QtWidgets.QVBoxLayout()
         head = QtWidgets.QHBoxLayout()
-        head.addWidget(label("SIGNAL · ADC2, BASELINE REMOVED", caps=True))
+        self.graph_title = label("", caps=True)
+        head.addWidget(self.graph_title)
+        head.addSpacing(12)
+        self.view_group = QtWidgets.QButtonGroup(self)
+        self.view_group.setExclusive(True)
+        for i, (text, tip) in enumerate(self.GRAPH_VIEWS):
+            b = QtWidgets.QPushButton(text)
+            b.setProperty("seg", True)
+            b.setCheckable(True)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            self.view_group.addButton(b, i)
+            head.addWidget(b)
+        self.view_group.idClicked.connect(self.set_graph_view)
         head.addStretch(1)
         self.zoom_span = label("", dim=True, size=12)
         head.addWidget(self.zoom_span)
@@ -684,9 +707,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.band = pg.LinearRegionItem(movable=False, brush=pg.mkBrush(255, 255, 255, 35), pen=pg.mkPen(None))
         self.band.hide()
         self.plot.addItem(self.band, ignoreBounds=True)
-        pc.addWidget(self.plot, 1)
-        pc.addWidget(label("Red triangles = detected peaks · shaded = active regions · wheel zooms, drag pans", dim=True, size=12))
+
+        # Line graph: running total of the tumor volume estimate (ml) along the recording
+        self.line_plot = self._graph("cumulative tumor volume (ml)")
+        self.line_band = None
+        self.line_curve = self.line_plot.plot()
+        self.line_marks = pg.ScatterPlotItem(size=6, pen=None)
+        self.line_plot.addItem(self.line_marks)
+
+        # Bubble chart: one bubble per active region with peaks; size = its volume
+        self.bubble_plot = self._graph("peaks in the region")
+        self.bubbles = None
+
+        self.graphs = QtWidgets.QStackedWidget()
+        for w in (self.plot, self.line_plot, self.bubble_plot):
+            self.graphs.addWidget(w)
+        pc.addWidget(self.graphs, 1)
+        self.graph_note = label("", dim=True, size=12, wrap=True)
+        pc.addWidget(self.graph_note)
         split.addWidget(card(pc, (14, 12, 14, 10)))
+        view = QtCore.QSettings(APP, APP).value("graph_view", 0, int)
+        self.set_graph_view(view if 0 <= view < len(self.GRAPH_VIEWS) else 0)
 
         tc = QtWidgets.QVBoxLayout()
         tc.addWidget(label("TUMOR EVENTS", caps=True))
@@ -708,6 +749,92 @@ class MainWindow(QtWidgets.QMainWindow):
         split.addWidget(card(tc, (14, 12, 14, 10)))
         split.setSizes([520, 300])
         return page
+
+    GRAPH_VIEWS = [("Signal", "The cleaned signal with detected peaks and active regions"),
+                   ("Line", "Running total of the tumor volume estimate (ml) along the recording"),
+                   ("Bubble", "One bubble per active region: time, peaks and volume (bubble size)")]
+    GRAPH_TITLES = ["SIGNAL · ADC2, BASELINE REMOVED", "LINE · CUMULATIVE TUMOR VOLUME",
+                    "BUBBLE · ACTIVE REGIONS WITH PEAKS"]
+    GRAPH_NOTES = ["Red triangles = detected peaks · shaded = active regions · wheel zooms, drag pans",
+                   "Line = point estimate added up region by region (red dot = end of a region) · shaded band = "
+                   "lower–upper range · wheel zooms, drag pans",
+                   "Each bubble is an active region with peaks: across = time, up = peaks in it, size = its volume "
+                   "(ml) · hover a bubble for details · wheel zooms, drag pans"]
+
+    def _graph(self, y_label):
+        """A time-axis plot whose zoom and pan follow the signal plot."""
+        w = pg.PlotWidget(background=C["plot_bg"])
+        w.showGrid(x=False, y=True, alpha=0.12)
+        w.setLabel("bottom", "seconds")
+        w.setLabel("left", y_label)
+        w.setMouseEnabled(x=True, y=False)
+        w.setMenuEnabled(False)
+        w.setXLink(self.plot)
+        vb = w.getPlotItem().vb
+        vb.setAutoVisible(y=True)
+        vb.enableAutoRange(axis=pg.ViewBox.YAxis)
+        return w
+
+    def set_graph_view(self, i):
+        self.graphs.setCurrentIndex(i)
+        self.view_group.button(i).setChecked(True)
+        self.graph_title.setText(self.GRAPH_TITLES[i])
+        self.graph_note.setText(self.GRAPH_NOTES[i])
+        QtCore.QSettings(APP, APP).setValue("graph_view", i)
+
+    @staticmethod
+    def _region_rows(r):
+        """Per-region start, duration, peaks, ml point/lower/upper and max height, sorted by time."""
+        k = r["ml_scale"]
+        rows = sorted(((d["region_start_sec"], d["duration_sec"], d["peak_count_in_region"],
+                        d["integrated_units"] * k, d["integrated_units_lower"] * k, d["integrated_units_upper"] * k,
+                        d["max_amplitude"]) for d in r["reg_details"]), key=lambda t: t[0])
+        return np.array(rows, dtype=float).reshape(-1, 7)
+
+    def _draw_line(self, r):
+        rows = self._region_rows(r)
+        if self.line_band is not None:
+            self.line_plot.removeItem(self.line_band)
+            self.line_band = None
+        if not len(rows):
+            self.line_curve.setData([], [])
+            self.line_marks.setData([], [])
+            return
+        t_end = rows[:, 0] + rows[:, 1]
+        x = np.concatenate([[0.0], t_end, [r["duration"]]])
+        point, lower, upper = (np.maximum(np.concatenate([[0.0], np.cumsum(rows[:, c])]), 0) for c in (3, 4, 5))
+        point, lower, upper = (np.append(a, a[-1]) for a in (point, lower, upper))
+        band = QtGui.QColor(C["trace"])
+        band.setAlpha(45)
+        self.line_band = pg.FillBetweenItem(pg.PlotDataItem(x, lower), pg.PlotDataItem(x, upper),
+                                            brush=pg.mkBrush(band))
+        self.line_plot.addItem(self.line_band)
+        self.line_curve.setData(x, point, pen=pg.mkPen(C["trace"], width=2))
+        self.line_curve.setZValue(2)
+        self.line_marks.setData(t_end, point[1:-1], brush=pg.mkBrush(C["tri"]))
+        self.line_marks.setZValue(3)
+
+    def _draw_bubbles(self, r):
+        rows = self._region_rows(r)
+        if self.bubbles is not None:
+            self.bubble_plot.removeItem(self.bubbles)
+            self.bubbles = None
+        if not len(rows):
+            return
+        mid = rows[:, 0] + rows[:, 1] / 2
+        ml = np.maximum(rows[:, 3], 0)
+        size = 8 + 42 * np.sqrt(ml / ml.max()) if ml.max() > 0 else np.full(len(ml), 8.0)
+        fill = QtGui.QColor(C["trace"])
+        fill.setAlpha(110)
+        spots = [dict(pos=(mid[i], rows[i, 2]), size=float(size[i]),
+                      data=(rows[i, 0], rows[i, 0] + rows[i, 1], int(rows[i, 2]), ml[i], rows[i, 6]))
+                 for i in range(len(rows))]
+        self.bubbles = pg.ScatterPlotItem(
+            spots=spots, brush=pg.mkBrush(fill), pen=pg.mkPen(C["trace"], width=1),
+            hoverable=True, hoverBrush=pg.mkBrush(C["tri"]),
+            tip=lambda x, y, data: (f"{data[0]:.2f}–{data[1]:.2f} s\n{data[2]} peaks\n"
+                                    f"{data[3]:.3f} ml\nmax height {data[4]:.0f}"))
+        self.bubble_plot.addItem(self.bubbles)
 
     def _stat(self, title, big=False):
         v = QtWidgets.QVBoxLayout()
@@ -839,6 +966,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.curve.setData([], [])
         self.peaks_item.setData([], [])
         self.regions_item.setOpts(x0=[], x1=[], y0=[], height=[])
+        self._draw_line(dict(reg_details=[], ml_scale=1.0))
+        self._draw_bubbles(dict(reg_details=[], ml_scale=1.0))
         self.table.setRowCount(0)
         for c in (self.c_peaks, self.c_volume, self.c_regions, self.c_length):
             c[1].setText("–")
@@ -852,6 +981,8 @@ class MainWindow(QtWidgets.QMainWindow):
         lo, hi = float(sig.min()), float(max(sig.max(), ev["height"].max() if len(ev) else 0))
         self.regions_item.setOpts(x0=r["starts"], x1=r["ends"], y0=np.full(len(r["starts"]), lo),
                                   height=np.full(len(r["starts"]), hi - lo))
+        self._draw_line(r)
+        self._draw_bubbles(r)
         self.table.setRowCount(len(ev))
         for i, e in ev.iterrows():
             cells = [str(i + 1), f"{e.peak_time_s:.2f}", f"{e.height:.0f}",

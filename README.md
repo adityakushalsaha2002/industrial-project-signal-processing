@@ -55,9 +55,18 @@ python gui_app.py path/to/file.csv  # opens the app with a recording already loa
    downsample 50 kHz → 100 Hz, remove baseline drift, store compactly, find active regions,
    detect peaks, estimate tumor volume. Click **Stop** to cancel.
 3. Read the results:
-   - **Signal plot** – the cleaned signal; red triangles are detected peaks, shaded bands are
-     active regions. Mouse wheel zooms, dragging pans, `−`/`+`/**Reset zoom** control the view.
-     Clicking a row in the table zooms to that peak.
+   - **Graph** – switch between three views with the **Signal / Line / Bubble** buttons above it
+     (the choice is remembered). All three share the time axis: mouse wheel zooms, dragging pans,
+     `−`/`+`/**Reset zoom** control the view, and clicking a row in the table zooms to that peak,
+     whichever view is shown.
+     - **Signal** – the cleaned signal; red triangles are detected peaks, shaded bands are active
+       regions.
+     - **Line** – the tumor volume estimate (ml) added up region by region along the recording;
+       red dots mark the end of each region with peaks, the shaded band is the running
+       lower–upper range. The line ends at the total shown in the volume card.
+     - **Bubble** – one bubble per active region with peaks: across = time, up = number of peaks
+       in it, bubble size = its volume (ml). Hover a bubble for its time span, peaks, ml and
+       highest peak.
    - **Tumor events table** – every peak with its time, height, region and the region's volume
      (in units).
    - **Right-hand cards** – number of tumor events (peaks per minute), **tumor volume in ml**
